@@ -53,18 +53,64 @@ BRIDGE_CONSTANTS = {
     "ACTION_PROPRIO_NORMALIZATION_TYPE": NormalizationType.BOUNDS_Q99,
 }
 
+# Single-arm Franka joint-delta (7 Δq + gripper). Used by pick_up / RoboTwin.
+FRANKA_JOINT_CONSTANTS = {
+    "NUM_ACTIONS_CHUNK": 8,
+    "ACTION_DIM": 8,
+    "PROPRIO_DIM": 8,
+    "ACTION_PROPRIO_NORMALIZATION_TYPE": NormalizationType.BOUNDS_Q99,
+}
+
+# Single UR3e: 6 absolute joints + gripper. grasp_conveyor_block is stored as a
+# duplicated 14-D vector; the dataset transform keeps the right-arm 7 dims.
+UR3E_JOINT_CONSTANTS = {
+    "NUM_ACTIONS_CHUNK": 12,
+    "ACTION_DIM": 7,
+    "PROPRIO_DIM": 7,
+    "ACTION_PROPRIO_NORMALIZATION_TYPE": NormalizationType.BOUNDS_Q99,
+}
+
 
 # Function to detect robot platform from command line arguments
-def detect_robot_platform():
-    cmd_args = " ".join(sys.argv).lower()
+def _cli_flag_value(flag: str) -> str:
+    """Return the value of `--flag value` or `--flag=value`, else empty."""
+    args = sys.argv
+    prefix = flag + "="
+    for i, token in enumerate(args):
+        if token == flag and i + 1 < len(args):
+            return args[i + 1]
+        if token.startswith(prefix):
+            return token[len(prefix) :]
+    return ""
 
-    if "libero" in cmd_args:
+
+def detect_robot_platform():
+    dataset_name = _cli_flag_value("--dataset_name").lower()
+    cmd_args = " ".join(sys.argv).lower()
+    # Prefer --dataset_name so sidecar paths cannot flip the platform.
+    haystack = dataset_name or cmd_args
+
+    if any(
+        key in haystack
+        for key in (
+            "grasp_conveyor_block",
+            "grasp_conveyor_rand_speed_2",
+            "grasp_conveyor_rand_speed",
+            "grasp_conveyor_multi_objects",
+            "grasp_conveyor_dual",
+            "grasp_conveyor_ring",
+        )
+    ):
+        return "UR3E_JOINT"
+    elif any(key in haystack for key in ("pick_up", "place_color_count_blocks_tray_rand")):
+        return "FRANKA_JOINT"
+    elif any(key in haystack for key in ("libero",)):
         return "LIBERO"
-    elif "aloha" in cmd_args:
+    elif "aloha" in haystack or "put_back_block" in haystack:
         return "ALOHA"
-    elif "bridge" in cmd_args:
+    elif "bridge" in haystack:
         return "BRIDGE"
-    elif "calvin" in cmd_args:
+    elif "calvin" in haystack:
         return "CALVIN"
     else:
         # Default to LIBERO if unclear
@@ -77,6 +123,10 @@ ROBOT_PLATFORM = detect_robot_platform()
 # Set the appropriate constants based on the detected platform
 if ROBOT_PLATFORM == "LIBERO":
     constants = LIBERO_CONSTANTS
+elif ROBOT_PLATFORM == "FRANKA_JOINT":
+    constants = FRANKA_JOINT_CONSTANTS
+elif ROBOT_PLATFORM == "UR3E_JOINT":
+    constants = UR3E_JOINT_CONSTANTS
 elif ROBOT_PLATFORM == "ALOHA":
     constants = ALOHA_CONSTANTS
 elif ROBOT_PLATFORM == "BRIDGE":

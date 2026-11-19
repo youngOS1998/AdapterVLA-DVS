@@ -84,14 +84,20 @@ class FinetuneConfig:
     use_film: bool = False                           # If True, uses FiLM to infuse language inputs into visual features
     num_images_in_input: int = 1                     # Number of images in the VLA input (default: 1)
     use_proprio: bool = False                        # If True, includes robot proprioceptive state in input
+    use_event_fusion: bool = False                   # If True, fuse a DVS event volume into the Pro action bridge
+    future_center_steps: int = 16                    # Farthest displacement. Labels are dx, dy at 1/4, 1/2, 3/4, and this many frames.
+    future_center_weight: float = 1.0                # Weight of that center loss beside the action L1
+    event_data_root: str = ""                        # Optional root when the hdf5 path stored in RLDS has moved
     phase1_path: str = "None"
+    future_action_window_size: int = NUM_ACTIONS_CHUNK - 1  # Action chunking: current + future actions
 
     # Training configuration
     batch_size: int = 8                              # Batch size per device (total batch size = batch_size * num GPUs)
     learning_rate: float = 5e-4                      # Learning rate
-    lr_warmup_steps: int = 0.1                       # Number of steps to warm up learning rate (from 10% to 100%)
+    lr_warmup_steps: int = 0                         # Warmup steps from 10% to 100% of the learning rate. 0 disables warmup.
     num_steps_before_decay: int = 100000             # Number of steps before LR decays by 10x
     grad_accumulation_steps: int = 1                 # Number of gradient accumulation steps
+    max_grad_norm: float = 1.0                       # Clip the global grad norm. A non-finite grad skips the step.
     max_steps: int = 200000                          # Max number of training steps
     use_val_set: bool = False                        # If True, uses validation set and log validation metrics
     val_freq: int = 10_000                           # (When `use_val_set==True`) Validation set logging frequency in steps
@@ -184,6 +190,8 @@ def get_run_id(cfg) -> str:
             run_id += f"+frozen+dropout-{cfg.lora_dropout}"
         if cfg.use_lora:
             run_id += f"+lora-r{cfg.lora_rank}+dropout-{cfg.lora_dropout}"
+        if cfg.use_event_fusion:
+            run_id += "+event"
         if cfg.image_aug:
             run_id += "--image_aug"
         if cfg.run_id_note is not None:
@@ -408,20 +416,59 @@ def run_forward_pass(
             multi_layer_hidden_states.append(all_hidden_states)
         multi_layer_hidden_states = torch.cat(multi_layer_hidden_states, dim = 1)
 
-        predicted_actions = action_head.module.predict_action(
+        event_kwargs = {}
+        if cfg is not None and cfg.use_event_fusion:
+            text_mask = batch["attention_mask"].to(device_id)
+            vision_mask = torch.ones(
+                text_mask.shape[0], num_patches, device=device_id, dtype=text_mask.dtype
+            )
+            context_mask = torch.cat([text_mask[:, :1], vision_mask, text_mask[:, 1:]], dim=1)
+            context = output.hidden_states[-1]
+            if context_mask.shape[1] != context.shape[1]:
+                raise RuntimeError(
+                    f"事件交叉注意力的 mask 长度 {context_mask.shape[1]} 和 VLM 隐状态 {context.shape[1]} 对不上"
+                )
+            event_kwargs = {
+                "events": batch["events"].to(device_id),
+                "context": context,
+                "context_mask": context_mask,
+                "return_aux": True,
+            }
+        predicted = action_head.module.predict_action(
             multi_layer_hidden_states,
             proprio=batch["proprio"] if use_proprio else None,
             proprio_projector=proprio_projector if use_proprio else None,
             phase=cfg.phase,
+            **event_kwargs,
             )
+        if event_kwargs:
+            predicted_actions, aux = predicted
+        else:
+            predicted_actions = predicted
+            aux = None
 
         loss = torch.nn.L1Loss()(predicted_actions, ground_truth_actions)
+        if aux is not None:
+            query_loss = _masked_l1(aux["query"], batch["query"].to(device_id), batch["query_mask"].to(device_id))
+            future_loss = _masked_l1(
+                aux["future_center"],
+                batch["future_center"].to(device_id),
+                batch["future_center_mask"].to(device_id),
+            )
+            loss = loss + query_loss + cfg.future_center_weight * future_loss
 
         metrics.update(
             {
                 "loss_value": loss.item(),  # Detached value for logging
             }
         )
+        if aux is not None:
+            metrics.update(
+                {
+                    "query_l1_loss": query_loss.item(),
+                    "future_center_l1_loss": future_loss.item(),
+                }
+            )
 
         # Get detailed L1 losses for logging
         should_log_l1_loss = use_l1_regression
@@ -433,8 +480,10 @@ def run_forward_pass(
             curr_action_l1_loss = torch.nn.L1Loss()(ground_truth_curr_action, predicted_curr_action)
             next_actions_l1_loss = torch.nn.L1Loss()(ground_truth_next_actions, predicted_next_actions)
             if compute_diffusion_l1:
-                print('curr: ',curr_action_l1_loss.item())
-                # print('next: ',next_actions_l1_loss.item())
+                message = f"curr: {curr_action_l1_loss.item():.4f}"
+                if aux is not None:
+                    message += f" query: {query_loss.item():.4f} ahead: {future_loss.item():.4f}"
+                print(message)
 
             metrics.update(
                 {
@@ -445,6 +494,23 @@ def run_forward_pass(
 
     # Return both the loss tensor (with gradients) and the metrics dictionary (with detached values)
     return loss, metrics
+
+
+
+def _masked_l1(pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    """Mean absolute error over entries whose mask is 1. An all-zero mask contributes nothing.
+
+    ``mask`` lines up with the leading dimensions of ``pred``. A query mask of
+    shape ``(batch,)`` covers that sample's ``(x, y)``. A displacement mask of
+    shape ``(batch, 4)`` covers each horizon's ``(dx, dy)``.
+    """
+    pred = pred.float()
+    target = target.to(device=pred.device, dtype=pred.dtype)
+    weight = mask.to(device=pred.device, dtype=pred.dtype)
+    while weight.ndim < pred.ndim:
+        weight = weight.unsqueeze(-1)
+    denom = weight.sum().clamp_min(1.0)
+    return ((pred - target).abs() * weight).sum() / denom
 
 
 
@@ -686,6 +752,15 @@ def run_validation(
 
 
 
+def _any_rank(flag: bool, device: torch.device) -> bool:
+    """True if any rank raised flag, so every DDP process takes the same branch."""
+    if not (dist.is_available() and dist.is_initialized()):
+        return flag
+    packed = torch.tensor(int(bool(flag)), device=device, dtype=torch.int32)
+    dist.all_reduce(packed, op=dist.ReduceOp.MAX)
+    return bool(packed.item())
+
+
 @draccus.wrap()
 def finetune(cfg: FinetuneConfig) -> None:
     """
@@ -815,6 +890,26 @@ def finetune(cfg: FinetuneConfig) -> None:
         missing_keys, unexpected_keys = vla.load_state_dict(RAW_STATE_DICT, strict=False)
         del old_state_dict
 
+        # Resume from the merged checkpoint. use_minivlm must stay True so the
+        # prompt still contains NUM_TOKENS action placeholders. The merged file
+        # already uses this model's key names, and it becomes the base that the
+        # next LoRA merge is applied on top of.
+        if cfg.resume:
+            merged_path = Path(cfg.resum_vla_path) / "model.safetensors"
+            if not merged_path.is_file():
+                raise FileNotFoundError(
+                    f"Resume with use_minivlm expects merged weights at {merged_path}"
+                )
+            from safetensors.torch import load_file
+
+            merged_state = load_file(str(merged_path))
+            missing_keys, unexpected_keys = vla.load_state_dict(merged_state, strict=False)
+            RAW_STATE_DICT = merged_state
+            print(
+                f"Loaded merged VLA from {merged_path} "
+                f"(missing={len(missing_keys)}, unexpected={len(unexpected_keys)})"
+            )
+
     else:
         RAW_STATE_DICT ={}
         vla = AutoModelForVision2Seq.from_pretrained(
@@ -879,8 +974,15 @@ def finetune(cfg: FinetuneConfig) -> None:
             to_bf16=True,
         )
 
+    # Get number of vision patches
+    NUM_PATCHES = vla.module.vision_backbone.get_num_patches() * vla.module.vision_backbone.get_num_images_in_input()
+
     # If applicable, instantiate continuous action head for L1 regression
     if cfg.use_l1_regression:
+        if cfg.use_event_fusion and not cfg.use_pro_version:
+            raise ValueError("事件网络接在 Pro 动作桥上，请同时打开 --use_pro_version True")
+        if cfg.use_event_fusion and not cfg.use_proprio:
+            raise ValueError("事件网络的中心头要读本体状态，请同时打开 --use_proprio True")
         action_head = init_module(
         L1RegressionActionHead,
         "action_head",
@@ -890,13 +992,12 @@ def finetune(cfg: FinetuneConfig) -> None:
             "input_dim": vla.module.llm_dim, 
             "hidden_dim": vla.module.llm_dim, 
             "action_dim": ACTION_DIM,
+            "num_task_tokens": NUM_PATCHES,
             "use_pro_version": cfg.use_pro_version,
+            "use_events": cfg.use_event_fusion,
             },
         to_bf16=True,
         )
-
-    # Get number of vision patches
-    NUM_PATCHES = vla.module.vision_backbone.get_num_patches() * vla.module.vision_backbone.get_num_images_in_input()
     # If we have proprio inputs, a single proprio embedding is appended to the end of the vision patch embeddings
 
     # Instantiate optimizer
@@ -956,7 +1057,10 @@ def finetune(cfg: FinetuneConfig) -> None:
         prompt_builder_fn=PurePromptBuilder,
         use_wrist_image=use_wrist_image,
         use_proprio=cfg.use_proprio,
-        use_minivlm=cfg.use_minivlm
+        use_minivlm=cfg.use_minivlm,
+        use_event_fusion=cfg.use_event_fusion,
+        future_center_steps=cfg.future_center_steps,
+        event_data_root=cfg.event_data_root,
         )
     train_dataset = RLDSDataset(
         cfg.data_root_dir,
@@ -964,6 +1068,7 @@ def finetune(cfg: FinetuneConfig) -> None:
         batch_transform,
         resize_resolution=tuple(vla.module.config.image_sizes),
         shuffle_buffer_size=cfg.shuffle_buffer_size,
+        future_action_window_size=cfg.future_action_window_size,
         image_aug=cfg.image_aug,
     )
     if cfg.use_val_set:
@@ -973,6 +1078,7 @@ def finetune(cfg: FinetuneConfig) -> None:
             batch_transform,
             resize_resolution=tuple(vla.module.config.image_sizes),
             shuffle_buffer_size=cfg.shuffle_buffer_size // 10,
+            future_action_window_size=cfg.future_action_window_size,
             image_aug=cfg.image_aug,
             train=False,
         )
@@ -1011,6 +1117,15 @@ def finetune(cfg: FinetuneConfig) -> None:
         "next_actions_accuracy": deque(maxlen=cfg.grad_accumulation_steps),
         "next_actions_l1_loss": deque(maxlen=cfg.grad_accumulation_steps),
     }
+    if cfg.use_event_fusion:
+        recent_metrics["query_l1_loss"] = deque(maxlen=cfg.grad_accumulation_steps)
+        recent_metrics["future_center_l1_loss"] = deque(maxlen=cfg.grad_accumulation_steps)
+
+    # A single non-finite step used to be written into every trained parameter.
+    # Fifty skipped steps in a row means the run is no longer learning.
+    consecutive_nonfinite = 0
+    pending_nonfinite = False
+    nonfinite_limit = 50
 
     # Start training
     with tqdm.tqdm(total=cfg.max_steps, leave=False) as progress:
@@ -1038,9 +1153,6 @@ def finetune(cfg: FinetuneConfig) -> None:
             # Normalize loss to account for gradient accumulation
             normalized_loss = loss / cfg.grad_accumulation_steps
 
-            # Backward pass
-            normalized_loss.backward()
-
             # Store recent train metrics
             for metric_name, value in metrics.items():
                 if metric_name in recent_metrics:
@@ -1065,21 +1177,49 @@ def finetune(cfg: FinetuneConfig) -> None:
                     param_group["lr"] = current_lr
 
             if distributed_state.is_main_process and gradient_step_idx % cfg.wandb_log_freq == 0:
-                # Log the learning rate
-                # Make sure to do this AFTER any learning rate modifications (e.g., warmup/decay)
+                # Log the learning rate actually used for the upcoming update.
                 wandb.log(
                     {
-                        "VLA Train/Learning Rate": scheduler.get_last_lr()[0],
+                        "VLA Train/Learning Rate": optimizer.param_groups[0]["lr"],
                     },
                     step=log_step,
                 )
 
+            # One NaN loss on any rank must skip backward on every rank, or DDP deadlocks.
+            loss_is_bad = not torch.isfinite(loss.detach()).all().item()
+            if _any_rank(loss_is_bad, loss.device):
+                pending_nonfinite = True
+                optimizer.zero_grad(set_to_none=True)
+            else:
+                normalized_loss.backward()
+
             # Optimizer and LR scheduler step
             if (batch_idx + 1) % cfg.grad_accumulation_steps == 0:
-                optimizer.step()
-                scheduler.step()
-                optimizer.zero_grad()
+                if pending_nonfinite:
+                    optimizer.zero_grad(set_to_none=True)
+                    consecutive_nonfinite += 1
+                    if distributed_state.is_main_process:
+                        print(f"跳过 step {log_step}：loss 不是有限数（连续 {consecutive_nonfinite} 步）")
+                else:
+                    grad_norm = nn.utils.clip_grad_norm_(trainable_params, cfg.max_grad_norm)
+                    grad_is_bad = not bool(torch.isfinite(torch.as_tensor(grad_norm)).all().item())
+                    if _any_rank(grad_is_bad, loss.device):
+                        optimizer.zero_grad(set_to_none=True)
+                        consecutive_nonfinite += 1
+                        if distributed_state.is_main_process:
+                            print(f"跳过 step {log_step}：梯度不是有限数（连续 {consecutive_nonfinite} 步）")
+                    else:
+                        optimizer.step()
+                        scheduler.step()
+                        optimizer.zero_grad(set_to_none=True)
+                        consecutive_nonfinite = 0
+                pending_nonfinite = False
                 progress.update()
+
+            if consecutive_nonfinite >= nonfinite_limit:
+                if distributed_state.is_main_process:
+                    print(f"连续 {consecutive_nonfinite} 步 loss 或梯度不是有限数，停止训练")
+                break
 
             # Save model checkpoint: either keep latest checkpoint only or all checkpoints
             if gradient_step_idx > 0 and log_step % cfg.save_freq == 0:

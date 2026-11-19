@@ -874,6 +874,31 @@ def aloha_dataset_transform(trajectory: Dict[str, Any]) -> Dict[str, Any]:
     return trajectory
 
 
+def grasp_conveyor_block_dataset_transform(trajectory: Dict[str, Any]) -> Dict[str, Any]:
+    # Stored as 14-D Aloha: left q6+grip + right q6+grip. The robot is one UR3e,
+    # so the two arms match and only the right gripper moves. Keep that 7-vector.
+    # Gripper stays native: 1 = open, 0 = closed.
+    trajectory["action"] = trajectory["action"][:, 7:14]
+    trajectory["observation"]["state"] = trajectory["observation"]["state"][:, 7:14]
+    return trajectory
+
+
+def franka_joint_dataset_transform(trajectory: Dict[str, Any]) -> Dict[str, Any]:
+    # 8-D: Δq1..Δq7 + gripper. Invert gripper like LIBERO so 1=open, 0=close.
+    gripper_action = invert_gripper_actions(tf.clip_by_value(trajectory["action"][:, -1:], 0, 1))
+    trajectory["action"] = tf.concat(
+        [
+            trajectory["action"][:, :7],
+            gripper_action,
+        ],
+        axis=1,
+    )
+    state = trajectory["observation"]["state"]
+    trajectory["observation"]["joint_state"] = state[:, :7]
+    trajectory["observation"]["gripper_state"] = state[:, 7:8]
+    return trajectory
+
+
 # === Registry ===
 OXE_STANDARDIZATION_TRANSFORMS = {
     "bridge_oxe": bridge_oxe_dataset_transform,
@@ -953,6 +978,7 @@ OXE_STANDARDIZATION_TRANSFORMS = {
     "libero_goal_no_noops": libero_dataset_transform,
     "libero_10_no_noops": libero_dataset_transform,
     "libero_4_task_suites_no_noops": libero_dataset_transform,
+    "pick_up": franka_joint_dataset_transform,
     "calvin_abc_rlds": calvin_dataset_transform,
     "calvin": calvin_dataset_transform,
     ### ALOHA fine-tuning datasets
@@ -960,4 +986,13 @@ OXE_STANDARDIZATION_TRANSFORMS = {
     "aloha1_fold_shirt_30_demos": aloha_dataset_transform,
     "aloha1_scoop_X_into_bowl_45_demos": aloha_dataset_transform,
     "aloha1_put_X_into_pot_300_demos": aloha_dataset_transform,
+    "put_back_block": aloha_dataset_transform,
+    "grasp_conveyor_block": grasp_conveyor_block_dataset_transform,
+    "grasp_conveyor_rand_speed": grasp_conveyor_block_dataset_transform,
+    "grasp_conveyor_rand_speed_2": grasp_conveyor_block_dataset_transform,
+    "grasp_conveyor_multi_objects": grasp_conveyor_block_dataset_transform,
+    "grasp_conveyor_dual": grasp_conveyor_block_dataset_transform,
+    "grasp_conveyor_ring": grasp_conveyor_block_dataset_transform,
+    ### RoboTwin single-arm Franka (right arm, 8-D joint delta)
+    "place_color_count_blocks_tray_rand": franka_joint_dataset_transform,
 }

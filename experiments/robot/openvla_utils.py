@@ -505,23 +505,19 @@ def get_action_head(cfg: Any, llm_dim: int) -> Union[L1RegressionActionHead]:
         else:
             cfg.use_pro_version = False
 
-    # Initialize appropriate action head based on configuration
-    if cfg.use_l1_regression:
-        action_head = L1RegressionActionHead(
-            input_dim=llm_dim, 
-            hidden_dim=llm_dim, 
-            action_dim=ACTION_DIM,
-            use_pro_version=cfg.use_pro_version,
-        )
-
-    else:
+    if not cfg.use_l1_regression:
         raise ValueError("Either use_l1_regression or use_diffusion must be True")
-
-    action_head = action_head.to(torch.bfloat16).to(DEVICE)
-    action_head.eval()
 
     # Find and load checkpoint (may be on Hugging Face Hub or stored locally)
     if model_is_on_hf_hub(cfg.pretrained_checkpoint):
+        action_head = L1RegressionActionHead(
+            input_dim=llm_dim,
+            hidden_dim=llm_dim,
+            action_dim=ACTION_DIM,
+            use_pro_version=cfg.use_pro_version,
+        )
+        action_head = action_head.to(torch.bfloat16).to(DEVICE)
+        action_head.eval()
         model_path_to_action_head_name = {
             "VLA-Adapter/LIBERO-Spatial-Pro": "action_head--checkpoint.pt",
             "VLA-Adapter/LIBERO-Object-Pro": "action_head--checkpoint.pt",
@@ -539,6 +535,18 @@ def get_action_head(cfg: Any, llm_dim: int) -> Union[L1RegressionActionHead]:
     else:
         checkpoint_path = find_checkpoint_file(cfg.pretrained_checkpoint, "action_head")
         state_dict = load_component_state_dict(checkpoint_path)
+        use_events = bool(getattr(cfg, "use_event_fusion", False)) or any(
+            key.startswith("event_encoder.") or key.startswith("module.event_encoder.") for key in state_dict
+        )
+        action_head = L1RegressionActionHead(
+            input_dim=llm_dim,
+            hidden_dim=llm_dim,
+            action_dim=ACTION_DIM,
+            use_pro_version=cfg.use_pro_version,
+            use_events=use_events,
+        )
+        action_head = action_head.to(torch.bfloat16).to(DEVICE)
+        action_head.eval()
         action_head.load_state_dict(state_dict)
 
     return action_head

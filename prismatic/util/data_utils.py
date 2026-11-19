@@ -172,4 +172,14 @@ class PaddedCollatorForActionPrediction:
         )
         if dataset_names is not None:
             output["dataset_names"] = dataset_names
+        if "events" in instances[0]:
+            output["events"] = torch.stack([torch.as_tensor(instance["events"]) for instance in instances])
+            output["query"] = torch.stack([torch.as_tensor(instance["query"]) for instance in instances])
+            output["query_mask"] = torch.stack([torch.as_tensor(instance["query_mask"]) for instance in instances])
+            output["future_center"] = torch.stack(
+                [torch.as_tensor(instance["future_center"]) for instance in instances]
+            )
+            output["future_center_mask"] = torch.stack(
+                [torch.as_tensor(instance["future_center_mask"]) for instance in instances]
+            )
         return output

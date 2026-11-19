@@ -169,6 +169,12 @@ def make_dataset_from_rlds(
 
         # add timestep info
         new_obs["timestep"] = tf.range(traj_len)
+        # Keep the source hdf5 path so the event network can rebuild the event volume.
+        episode_meta = traj.get("traj_metadata", {}).get("episode_metadata", {})
+        if "file_path" in episode_meta:
+            new_obs["file_path"] = episode_meta["file_path"]
+        if "episode_index" in episode_meta:
+            new_obs["episode_index"] = tf.cast(episode_meta["episode_index"], tf.int32)
 
         # extracts `language_key` into the "task" dict
         task = {}

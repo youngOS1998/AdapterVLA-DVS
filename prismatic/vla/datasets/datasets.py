@@ -21,6 +21,7 @@ from prismatic.models.backbones.vision import ImageTransform
 from prismatic.util.data_utils import tree_map
 from prismatic.vla.action_tokenizer import ActionTokenizer
 from prismatic.vla.constants import ACTION_DIM, ACTION_PROPRIO_NORMALIZATION_TYPE, ACTION_TOKEN_BEGIN_IDX, IGNORE_INDEX, NUM_ACTIONS_CHUNK, PROPRIO_DIM, STOP_INDEX, NUM_TOKENS
+from prismatic.vla.datasets.event_volume import EventVolumeIndex
 from prismatic.vla.datasets.rlds import make_interleaved_dataset, make_single_dataset
 from prismatic.vla.datasets.rlds.oxe import OXE_NAMED_MIXTURES, get_oxe_dataset_kwargs_and_weights
 
@@ -36,6 +37,12 @@ class RLDSBatchTransform:
     use_wrist_image: bool = False
     use_proprio: bool = False
     use_minivlm: bool = False
+    use_event_fusion: bool = False
+    future_center_steps: int = 16
+    event_data_root: str = ""
+
+    def __post_init__(self):
+        self._event_index = EventVolumeIndex(self.event_data_root) if self.use_event_fusion else None
 
 
     def __call__(self, rlds_batch: Dict[str, Any]) -> Dict[str, Any]:
@@ -140,6 +147,18 @@ class RLDSBatchTransform:
             proprio = rlds_batch["observation"]["proprio"]
             return_dict["proprio"] = proprio
 
+        if self.use_event_fusion:
+            observation = rlds_batch["observation"]
+            if "file_path" not in observation:
+                raise KeyError("事件网络需要 RLDS 轨迹里的 file_path，当前样本没有这一项")
+            return_dict.update(
+                self._event_index.sample(
+                    observation["file_path"],
+                    observation["timestep"],
+                    self.future_center_steps,
+                )
+            )
+
         return return_dict
     
     
@@ -152,6 +171,7 @@ class RLDSDataset(IterableDataset):
         batch_transform: RLDSBatchTransform,
         resize_resolution: Tuple[int, int],
         shuffle_buffer_size: int = 256_000,
+        future_action_window_size: int = NUM_ACTIONS_CHUNK - 1,
         train: bool = True,
         image_aug: bool = False,
     ) -> None:
@@ -166,7 +186,10 @@ class RLDSDataset(IterableDataset):
             mixture_spec = [(self.data_mix, 1.0)]
 
         # fmt: off
-        if "aloha" in self.data_mix:
+        bimanual = "aloha" in self.data_mix or any(
+            "aloha" in name or name == "put_back_block" for name, _weight in mixture_spec
+        )
+        if bimanual:
             load_camera_views = ("primary", "left_wrist", "right_wrist")
         else:
             load_camera_views = ("primary", "wrist")
@@ -183,7 +206,7 @@ class RLDSDataset(IterableDataset):
         rlds_config = dict(
             traj_transform_kwargs=dict(
                 window_size=1,                                      # If we wanted to feed / predict more than one step
-                future_action_window_size=NUM_ACTIONS_CHUNK-1,      # For action chunking
+                future_action_window_size=future_action_window_size,  # For action chunking
                 skip_unlabeled=True,                                # Skip trajectories without language labels
                 goal_relabeling_strategy="uniform",                 # Goals are currently unused
             ),

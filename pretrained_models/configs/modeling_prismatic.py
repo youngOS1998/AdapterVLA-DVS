@@ -817,6 +817,7 @@ class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
         action_head=None,
         proprio=None,
         proprio_projector=None,
+        events=None,
     ):
         """Run L1 regression-based continuous action prediction or discrete action tokens prediction."""
 
@@ -865,9 +866,23 @@ class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
         # Handle different prediction methods
         if action_head is not None:
             # L1 regression prediction
+            event_kwargs = {}
+            if events is not None:
+                if not torch.is_tensor(events):
+                    events = torch.as_tensor(events, device=multi_layer_hidden_states.device)
+                else:
+                    events = events.to(multi_layer_hidden_states.device)
+                if events.ndim == 4:
+                    events = events.unsqueeze(0)
+                event_kwargs = {
+                    "events": events,
+                    "context": language_model_output.hidden_states[-1],
+                    "context_mask": multimodal_attention_mask,
+                }
             normalized_actions = action_head.predict_action(multi_layer_hidden_states,
                                                 proprio=proprio,
-                                                proprio_projector=proprio_projector)
+                                                proprio_projector=proprio_projector,
+                                                **event_kwargs)
             normalized_actions = normalized_actions.reshape(NUM_ACTIONS_CHUNK, ACTION_DIM)
             normalized_actions = normalized_actions.float().cpu().detach().numpy()
         else:
@@ -917,7 +932,8 @@ class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
         """
 
         pixel_values = kwargs["pixel_values"] # [1, 12, 224, 224]
-        attention_mask = kwargs["attention_mask"] # 
+        attention_mask = kwargs["attention_mask"] #
+        events = kwargs.get("events")
 
         # Create fake labels tensor (needed for action mask)
         labels = input_ids.clone()
@@ -964,6 +980,7 @@ class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
             action_head=action_head,
             proprio=proprio, # [8]
             proprio_projector=proprio_projector,
+            events=events,
             )
            
         # Unnormalize predicted actions

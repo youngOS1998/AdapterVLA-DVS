@@ -206,6 +206,9 @@ OXE_NAMED_MIXTURES: Dict[str, List[Tuple[str, float]]] = {
     "libero_10_no_noops": [
         ("libero_10_no_noops", 1.0),
     ],
+    "pick_up": [
+        ("pick_up", 1.0),
+    ],
     "libero_4_task_suites_no_noops": [
         ("libero_spatial_no_noops", 1.0),
         ("libero_object_no_noops", 1.0),
@@ -225,6 +228,32 @@ OXE_NAMED_MIXTURES: Dict[str, List[Tuple[str, float]]] = {
     ],
     "aloha1_put_X_into_pot_300_demos": [
         ("aloha1_put_X_into_pot_300_demos", 1.0),
+    ],
+    "put_back_block": [
+        ("put_back_block", 1.0),
+    ],
+
+    # === RoboTwin Fine-Tuning Datasets ===
+    "place_color_count_blocks_tray_rand": [
+        ("place_color_count_blocks_tray_rand", 1.0),
+    ],
+    "grasp_conveyor_block": [
+        ("grasp_conveyor_block", 1.0),
+    ],
+    "grasp_conveyor_rand_speed": [
+        ("grasp_conveyor_rand_speed", 1.0),
+    ],
+    "grasp_conveyor_rand_speed_2": [
+        ("grasp_conveyor_rand_speed_2", 1.0),
+    ],
+    "grasp_conveyor_multi_objects": [
+        ("grasp_conveyor_multi_objects", 1.0),
+    ],
+    "grasp_conveyor_dual": [
+        ("grasp_conveyor_dual", 1.0),
+    ],
+    "grasp_conveyor_ring": [
+        ("grasp_conveyor_ring", 1.0),
     ],
 # fmt: on
 }

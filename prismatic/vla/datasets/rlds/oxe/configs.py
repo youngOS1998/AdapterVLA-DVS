@@ -47,6 +47,7 @@ class ActionEncoding(IntEnum):
     JOINT_POS = 2           # Joint Delta Position (7) + Gripper Open/Close (1)
     JOINT_POS_BIMANUAL = 3  # Joint Delta Position (2 x [ Joint Delta Position (6) + Gripper Open/Close (1) ])
     EEF_R6 = 4              # EEF Delta XYZ (3) + R6 (6) + Gripper Open/Close (1)
+    JOINT_POS_ABSOLUTE = 5  # Absolute joint position (6) + Gripper Open/Close (1)
     # fmt: on
 
 
@@ -670,6 +671,13 @@ OXE_DATASET_CONFIGS = {
         "state_encoding": StateEncoding.POS_EULER,
         "action_encoding": ActionEncoding.EEF_POS,
     },
+    "pick_up": {
+        "image_obs_keys": {"primary": "image", "secondary": None, "wrist": "wrist_image"},
+        "depth_obs_keys": {"primary": None, "secondary": None, "wrist": None},
+        "state_obs_keys": ["joint_state", "gripper_state"],
+        "state_encoding": StateEncoding.JOINT,
+        "action_encoding": ActionEncoding.JOINT_POS,
+    },
     "calvin_abc": {
         "image_obs_keys": {"primary": "rgb_static", "secondary": None, "wrist": "rgb_gripper"},
         "depth_obs_keys": {"primary": None, "secondary": None, "wrist": None},
@@ -719,5 +727,64 @@ OXE_DATASET_CONFIGS = {
         "state_obs_keys": ["state"],
         "state_encoding": StateEncoding.JOINT_BIMANUAL,
         "action_encoding": ActionEncoding.JOINT_POS_BIMANUAL,
+    },
+    # RoboTwin Aloha AgileX, 14-D absolute joints (left q6+grip + right q6+grip).
+    "put_back_block": {
+        "image_obs_keys": {"primary": "image", "secondary": None, "left_wrist": "left_wrist_image", "right_wrist": "right_wrist_image"},
+        "depth_obs_keys": {"primary": None, "secondary": None, "wrist": None},
+        "state_obs_keys": ["state"],
+        "state_encoding": StateEncoding.JOINT_BIMANUAL,
+        "action_encoding": ActionEncoding.JOINT_POS_BIMANUAL,
+    },
+    # Single UR3e. The RLDS file is 14-D; the transform keeps right q6 + gripper.
+    "grasp_conveyor_block": {
+        "image_obs_keys": {"primary": "image", "secondary": None, "wrist": "right_wrist_image"},
+        "depth_obs_keys": {"primary": None, "secondary": None, "wrist": None},
+        "state_obs_keys": ["state"],
+        "state_encoding": StateEncoding.JOINT,
+        "action_encoding": ActionEncoding.JOINT_POS_ABSOLUTE,
+    },
+    "grasp_conveyor_rand_speed": {
+        "image_obs_keys": {"primary": "image", "secondary": None, "wrist": "right_wrist_image"},
+        "depth_obs_keys": {"primary": None, "secondary": None, "wrist": None},
+        "state_obs_keys": ["state"],
+        "state_encoding": StateEncoding.JOINT,
+        "action_encoding": ActionEncoding.JOINT_POS_ABSOLUTE,
+    },
+    "grasp_conveyor_rand_speed_2": {
+        "image_obs_keys": {"primary": "image", "secondary": None, "wrist": "right_wrist_image"},
+        "depth_obs_keys": {"primary": None, "secondary": None, "wrist": None},
+        "state_obs_keys": ["state"],
+        "state_encoding": StateEncoding.JOINT,
+        "action_encoding": ActionEncoding.JOINT_POS_ABSOLUTE,
+    },
+    "grasp_conveyor_multi_objects": {
+        "image_obs_keys": {"primary": "image", "secondary": None, "wrist": "right_wrist_image"},
+        "depth_obs_keys": {"primary": None, "secondary": None, "wrist": None},
+        "state_obs_keys": ["state"],
+        "state_encoding": StateEncoding.JOINT,
+        "action_encoding": ActionEncoding.JOINT_POS_ABSOLUTE,
+    },
+    "grasp_conveyor_dual": {
+        "image_obs_keys": {"primary": "image", "secondary": None, "wrist": "right_wrist_image"},
+        "depth_obs_keys": {"primary": None, "secondary": None, "wrist": None},
+        "state_obs_keys": ["state"],
+        "state_encoding": StateEncoding.JOINT,
+        "action_encoding": ActionEncoding.JOINT_POS_ABSOLUTE,
+    },
+    "grasp_conveyor_ring": {
+        "image_obs_keys": {"primary": "image", "secondary": None, "wrist": "right_wrist_image"},
+        "depth_obs_keys": {"primary": None, "secondary": None, "wrist": None},
+        "state_obs_keys": ["state"],
+        "state_encoding": StateEncoding.JOINT,
+        "action_encoding": ActionEncoding.JOINT_POS_ABSOLUTE,
+    },
+    ### RoboTwin single-arm Franka (right arm, 8-D joint delta)
+    "place_color_count_blocks_tray_rand": {
+        "image_obs_keys": {"primary": "image", "secondary": None, "wrist": "wrist_image"},
+        "depth_obs_keys": {"primary": None, "secondary": None, "wrist": None},
+        "state_obs_keys": ["joint_state", "gripper_state"],
+        "state_encoding": StateEncoding.JOINT,
+        "action_encoding": ActionEncoding.JOINT_POS,
     },
 }
