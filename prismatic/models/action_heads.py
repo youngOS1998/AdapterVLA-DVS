@@ -70,8 +70,8 @@ class L1RegressionActionHead(nn.Module):
         proprio_features = proprio_projector(proprio)  # (bsz, llm_dim)
         proprio_features = proprio_features.unsqueeze(dim=1)  # (bsz, 1, llm_dim)
 
-        task_hidden_states = actions_hidden_states[:, :, :self.num_task_tokens, :]
-        actions_hidden_states = actions_hidden_states[:, :, self.num_task_tokens:, :]
+        task_hidden_states = actions_hidden_states[:, :, :self.num_task_tokens, :]       # 提取出跟视觉有关的token
+        actions_hidden_states = actions_hidden_states[:, :, self.num_task_tokens:, :]    # 提取出action query
         event_tokens, event_valid, future, query, future_center = self._encode_events(
             actions_hidden_states,
             proprio,

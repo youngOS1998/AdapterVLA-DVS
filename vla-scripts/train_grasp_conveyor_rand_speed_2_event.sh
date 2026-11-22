@@ -22,7 +22,7 @@ if ! command -v torchrun >/dev/null 2>&1; then
 fi
 
 # 2 cameras: head + right wrist. Event fusion reads vision/cam_head/events.
-CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --standalone --nnodes 1 --nproc-per-node 4 vla-scripts/finetune.py \
+CUDA_VISIBLE_DEVICES=4,5,6,7 torchrun --standalone --nnodes 1 --nproc-per-node 4 vla-scripts/finetune.py \
   --vlm_path pretrained_models/prism-qwen25-extra-dinosiglip-224px-0_5b \
   --config_file_path pretrained_models/configs \
   --data_root_dir /mnt/Projects_origin/VLA-Adapter/data/robotwin_rlds \

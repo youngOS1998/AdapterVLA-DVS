@@ -2,9 +2,12 @@
 
 A square polarity-time volume becomes one token per cell. The current object
 center is added to every token that the action bridge reads. A separate head
-pools those cells before the center is added and regresses four image-plane
-displacements.
+pools those cells before the center is added. The pool plus the current center
+cross-attends to the VLM's last layer, and one MLP reads that sum as four
+image-plane displacements.
 """
+
+import math
 
 import torch
 from torch import nn
@@ -49,6 +52,43 @@ class FutureProjector(nn.Module):
         return self.fc2(hidden)
 
 
+class GoalCrossAttention(nn.Module):
+    """Attend from the event pool and the current center into the VLM last layer."""
+
+    def __init__(self, dim, num_heads=8):
+        super().__init__()
+        if dim % num_heads != 0:
+            raise ValueError(f"位移交叉注意力的宽度 {dim} 不能被 {num_heads} 个头整除")
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        self.q = nn.Linear(dim, dim)
+        self.k = nn.Linear(dim, dim)
+        self.v = nn.Linear(dim, dim)
+        self.out = nn.Linear(dim, dim)
+
+    def forward(self, pooled, center, context, context_mask):
+        query = pooled + center
+        batch, length, _ = context.shape
+        q = self.q(query).view(batch, self.num_heads, 1, self.head_dim)
+        k = self.k(context).view(batch, length, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        v = self.v(context).view(batch, length, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+        scores = torch.matmul(q.float(), k.float().transpose(-2, -1)) / math.sqrt(self.head_dim)
+        if context_mask is not None:
+            mask = context_mask.to(device=scores.device).bool()
+            if mask.shape != (batch, length):
+                raise RuntimeError(
+                    f"视觉和指令 mask 是 {tuple(mask.shape)}，VLM 隐状态是 {(batch, length)}"
+                )
+            scores = scores.masked_fill(~mask[:, None, None, :], -1.0e4)
+            readable = mask.any(dim=1)
+        else:
+            readable = torch.ones(batch, dtype=torch.bool, device=scores.device)
+        attn = torch.softmax(scores, dim=-1).to(dtype=context.dtype)
+        mixed = torch.matmul(attn, v).reshape(batch, -1)
+        mixed = self.out(mixed)
+        return mixed * readable.to(dtype=mixed.dtype).unsqueeze(-1)
+
+
 class EventMotionEncoder(nn.Module):
     """Tokens from a square polarity-time-image volume, conditioned on the object center.
 
@@ -59,7 +99,6 @@ class EventMotionEncoder(nn.Module):
 
     def __init__(self, out_dim: int, context_dim: int | None = None):
         super().__init__()
-        del context_dim
         self.conv = nn.Sequential(
             nn.Conv3d(2, 32, kernel_size=3, stride=(1, 2, 2), padding=1),
             nn.ReLU(inplace=True),
@@ -72,12 +111,17 @@ class EventMotionEncoder(nn.Module):
         )
         self.proj = nn.Linear(64, out_dim)
         self.query_proj = nn.Linear(2, out_dim)
-        self.displacement = nn.Sequential(
+        self.readout = nn.Sequential(
             nn.LayerNorm(out_dim),
             nn.Linear(out_dim, out_dim),
             nn.GELU(),
             nn.Linear(out_dim, DISPLACEMENT_COUNT * 2),
         )
+        if context_dim is None or context_dim == out_dim:
+            self.context_in = nn.Identity()
+        else:
+            self.context_in = nn.Linear(context_dim, out_dim)
+        self.goal_attn = GoalCrossAttention(out_dim)
 
     def forward(
         self,
@@ -86,7 +130,6 @@ class EventMotionEncoder(nn.Module):
         context: torch.Tensor | None = None,
         context_mask: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
-        del context, context_mask
         if volume.ndim == 4:
             volume = volume.unsqueeze(0)
         dtype = self.proj.weight.dtype
@@ -101,20 +144,37 @@ class EventMotionEncoder(nn.Module):
             valid[empty, 0] = True
             tokens = tokens.clone()
             tokens[empty, 0] = 0
-        future = self._displacements(tokens, valid)
         if query.ndim == 1:
             query = query.unsqueeze(0)
+        future = self._displacements(tokens, valid, query, context, context_mask)
         point = self.query_proj(query.to(dtype=tokens.dtype)).unsqueeze(1)
         tokens = tokens + point
         return {"tokens": tokens, "valid": valid, "future": future}
 
-    def _displacements(self, tokens: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
-        """``(batch, 4, 2)`` image displacements from the event cells alone.
-
-        The current center is added to ``tokens`` only after this pool, so this
-        head cannot answer by copying that center.
-        """
+    def _pool(self, tokens: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
         weight = valid.to(dtype=tokens.dtype).unsqueeze(-1)
-        pooled = (tokens * weight).sum(dim=1) / weight.sum(dim=1).clamp_min(1.0)
-        raw = self.displacement(pooled)
+        return (tokens * weight).sum(dim=1) / weight.sum(dim=1).clamp_min(1.0)
+
+    def _displacements(
+        self,
+        tokens: torch.Tensor,
+        valid: torch.Tensor,
+        query: torch.Tensor,
+        context: torch.Tensor | None,
+        context_mask: torch.Tensor | None,
+    ) -> torch.Tensor:
+        """``(batch, 4, 2)`` image displacements.
+
+        The event pool is the query, together with the current center. It
+        cross-attends to the vision patches and the instruction. The readout
+        sees the pool and that attended state together, so the belt motion
+        stays in the vector that produces ``(dx, dy)``.
+        """
+        if context is None:
+            raise RuntimeError("未来位移要读 VLM 最后一层，这一步却没有隐状态")
+        pooled = self._pool(tokens, valid)
+        context = self.context_in(context.to(device=pooled.device, dtype=pooled.dtype))
+        center = self.query_proj(query.to(device=pooled.device, dtype=pooled.dtype))
+        attended = self.goal_attn(pooled, center, context, context_mask)                 # attended 是从画面和指令里读来的目标信息
+        raw = self.readout(pooled + attended)
         return raw.view(tokens.shape[0], DISPLACEMENT_COUNT, 2)
