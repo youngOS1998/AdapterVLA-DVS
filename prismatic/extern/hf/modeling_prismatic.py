@@ -23,7 +23,6 @@ from transformers.modeling_outputs import ModelOutput
 from prismatic.training.train_utils import (
     get_current_action_mask,
     get_next_actions_mask,
-    vision_instruction_mask,
 )
 from prismatic.vla.constants import (
     ACTION_DIM,
@@ -875,12 +874,10 @@ class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
                     events = events.to(multi_layer_hidden_states.device)
                 if events.ndim == 4:
                     events = events.unsqueeze(0)
-                text_drop = all_actions_mask.to(dtype=torch.bool) | labels.eq(STOP_INDEX)
-                read_mask = vision_instruction_mask(attention_mask, text_drop, NUM_PATCHES)
                 event_kwargs = {
                     "events": events,
                     "context": language_model_output.hidden_states[-1],
-                    "context_mask": read_mask,
+                    "context_mask": multimodal_attention_mask,
                 }
             normalized_actions = action_head.predict_action(multi_layer_hidden_states,
                                                 proprio=proprio,

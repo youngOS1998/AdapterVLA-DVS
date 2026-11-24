@@ -43,8 +43,7 @@ from prismatic.training.train_utils import (
     compute_actions_l1_loss,
     compute_token_accuracy,
     get_current_action_mask,
-    get_next_actions_mask,
-    vision_instruction_mask,
+    get_next_actions_mask
 )
 from prismatic.util.data_utils import PaddedCollatorForActionPrediction
 from prismatic.vla.action_tokenizer import ActionTokenizer
@@ -53,8 +52,7 @@ from prismatic.vla.constants import (
     ACTION_PROPRIO_NORMALIZATION_TYPE,
     NUM_ACTIONS_CHUNK,
     PROPRIO_DIM,
-    NUM_TOKENS,
-    STOP_INDEX,
+    NUM_TOKENS
 )
 from prismatic.vla.datasets import RLDSDataset, RLDSBatchTransform
 from prismatic.vla.datasets.rlds.utils.data_utils import save_dataset_statistics
@@ -405,15 +403,15 @@ def run_forward_pass(
         # Get last layer hidden states
         multi_layer_hidden_states = []
         
-        for item in output.hidden_states[0:]:   # 总共有25层隐藏状态
+        for item in output.hidden_states[0:]:
             # last_hidden_states = output.hidden_states[-1]  # (B, seq_len, D)
             # Get hidden states for text portion of prompt+response (after the vision patches)
-            text_hidden_states = item[:, num_patches:-1]   # 丢掉前面的视觉patch，留下来的是指令和动作query
+            text_hidden_states = item[:, num_patches:-1]
             # Get hidden states for action portion of response
             batch_size = batch["input_ids"].shape[0]
             # actions_hidden_states = text_hidden_states[:, -1, :].reshape(batch_size, 1, -1).to(torch.bfloat16)
             actions_hidden_states = text_hidden_states[current_action_mask | next_actions_mask].reshape(batch_size, 1,NUM_TOKENS, -1).to(torch.bfloat16)
-            task_latten_states = item[:, :num_patches].reshape(batch_size, 1, num_patches , -1)  # 提取出视觉patch
+            task_latten_states = item[:, :num_patches].reshape(batch_size, 1, num_patches , -1)
             all_hidden_states = torch.cat((task_latten_states, actions_hidden_states),2)
             multi_layer_hidden_states.append(all_hidden_states)
         multi_layer_hidden_states = torch.cat(multi_layer_hidden_states, dim = 1)
@@ -421,12 +419,10 @@ def run_forward_pass(
         event_kwargs = {}
         if cfg is not None and cfg.use_event_fusion:
             text_mask = batch["attention_mask"].to(device_id)
-            full_labels = batch["labels"].to(device_id)
-            # current/next masks line up with labels[:, 1:], the tokens after BOS.
-            text_drop = torch.zeros_like(full_labels, dtype=torch.bool)
-            text_drop[:, 1:] = (current_action_mask | next_actions_mask).to(dtype=torch.bool)
-            text_drop |= full_labels.eq(STOP_INDEX)
-            context_mask = vision_instruction_mask(text_mask, text_drop, num_patches)
+            vision_mask = torch.ones(
+                text_mask.shape[0], num_patches, device=device_id, dtype=text_mask.dtype
+            )
+            context_mask = torch.cat([text_mask[:, :1], vision_mask, text_mask[:, 1:]], dim=1)
             context = output.hidden_states[-1]
             if context_mask.shape[1] != context.shape[1]:
                 raise RuntimeError(

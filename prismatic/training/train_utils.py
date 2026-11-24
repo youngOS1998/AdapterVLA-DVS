@@ -23,26 +23,6 @@ def get_current_action_mask(token_ids):
     return mask
 
 
-def vision_instruction_mask(text_mask, drop_mask, num_patches):
-    """Tokens the future-displacement head may read.
-
-    ``text_mask`` and ``drop_mask`` line up with the text token ids. The VLM
-    hidden state inserts ``num_patches`` vision tokens after BOS, so the
-    returned mask lines up with that hidden state. Dropped text positions are
-    the action queries and the stop token. BOS, the vision patches, and the
-    instruction stay.
-    """
-    drop_mask = drop_mask.to(device=text_mask.device)
-    keep = text_mask.to(dtype=torch.bool) & ~drop_mask.to(dtype=torch.bool)
-    vision = torch.ones(
-        text_mask.shape[0],
-        int(num_patches),
-        dtype=torch.bool,
-        device=text_mask.device,
-    )
-    return torch.cat([keep[:, :1], vision, keep[:, 1:]], dim=1)
-
-
 def get_next_actions_mask(token_ids):
     # import pdb; pdb.set_trace()
     # Create a tensor marking positions of IGNORE_INDEX
