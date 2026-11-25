@@ -988,6 +988,7 @@ OXE_STANDARDIZATION_TRANSFORMS = {
     "aloha1_put_X_into_pot_300_demos": aloha_dataset_transform,
     "put_back_block": aloha_dataset_transform,
     "grasp_conveyor_block": grasp_conveyor_block_dataset_transform,
+    "grasp_conveyor_block_2": grasp_conveyor_block_dataset_transform,
     "grasp_conveyor_rand_speed": grasp_conveyor_block_dataset_transform,
     "grasp_conveyor_rand_speed_2": grasp_conveyor_block_dataset_transform,
     "grasp_conveyor_multi_objects": grasp_conveyor_block_dataset_transform,

@@ -240,6 +240,9 @@ OXE_NAMED_MIXTURES: Dict[str, List[Tuple[str, float]]] = {
     "grasp_conveyor_block": [
         ("grasp_conveyor_block", 1.0),
     ],
+    "grasp_conveyor_block_2": [
+        ("grasp_conveyor_block_2", 1.0),
+    ],
     "grasp_conveyor_rand_speed": [
         ("grasp_conveyor_rand_speed", 1.0),
     ],

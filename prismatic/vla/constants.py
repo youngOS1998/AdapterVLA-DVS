@@ -93,6 +93,7 @@ def detect_robot_platform():
     if any(
         key in haystack
         for key in (
+            "grasp_conveyor_block_2",
             "grasp_conveyor_block",
             "grasp_conveyor_rand_speed_2",
             "grasp_conveyor_rand_speed",
